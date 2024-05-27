@@ -21,4 +21,5 @@ This script does work on Linux and Mac. But the Task scheduler (Xml) is limited 
 
 ## To do
 
-1. Implement authentication with username and password. And remove `Bypass authentication for clients on localhost`
+1. Implement authentication with username and password. And remove `Bypass authentication for clients on localhost`.
+2. Add instructions for linux and mac scheduler.
