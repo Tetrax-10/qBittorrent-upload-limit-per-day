@@ -3,7 +3,7 @@
   <RegistrationInfo>
     <Date>2024-05-27T01:36:30.5543678</Date>
     <Author>Tetrax-10</Author>
-    <Description>A python script that runs in background to track the qBittorrent's upload data usage and pauses all seeding torrents if the limit has reached.</Description>
+    <Description>A Python script that automatically runs in the background on startup to track qBittorrent's upload data usage and pauses all torrents if the limit is reached.</Description>
     <URI>\qBittorrent-upload-limit-per-day startup</URI>
   </RegistrationInfo>
   <Triggers>
