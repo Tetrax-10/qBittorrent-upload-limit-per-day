@@ -8,17 +8,18 @@ from os.path import exists
 
 # Configuration
 UPLOAD_LIMIT = 50  # Upload limit in GB (per day)
-QB_URL = "http://localhost:8080"  # qBittorrent Web UI URL
-CHECK_INTERVAL = 10  # In seconds
+QB_URL = "http://localhost:8080" # qBittorrent Web UI URL
+CHECK_INTERVAL = 60  # In seconds
 RESET_TIME = "00:01"  # HH:MM ("00:01" will reset exactly at 12:01.AM)
-AUTH_ENABLED = False  # True | False
+AUTH_ENABLED = True
+TIMEOUT = 10
 
 # Global vars
-previous_session_upload_data_usage = 0.0
-current_session_upload_data_usage = 0.0
-last_event_upload_data_usage = 0.0
-current_session_previous_day_upload_data_usage = 0.0
-qb_online_status = False
+qb_online_status = True
+upload_today_midnight = None
+update_job = None
+reset_job = None
+
 
 def login():
     """
@@ -78,7 +79,7 @@ def request_with_login(func, *args, **kwargs):
     :param kwargs: -- function keyword parameters
     """
     if not AUTH_ENABLED:
-        return func(*args, **kwargs)
+        return func(*args, **kwargs, timeout=TIMEOUT)
     if not exists("cookies.json"):
         res = login()
         if not res[0]:
@@ -87,7 +88,7 @@ def request_with_login(func, *args, **kwargs):
     with open("cookies.json") as f:
         cookies = json.load(f)
 
-    response = func(*args, **kwargs, cookies=cookies)
+    response = func(*args, **kwargs, cookies=cookies, timeout=TIMEOUT)
     
     if response.status_code == 403:
         print("Token expired, requesting new one")
@@ -97,27 +98,20 @@ def request_with_login(func, *args, **kwargs):
             exit(1)
         with open("cookies.json") as f:
             cookies = json.load(f)
-        response = func(*args, **kwargs, cookies=cookies)
+        response = func(*args, **kwargs, cookies=cookies, timeout=TIMEOUT)
     
     return response
 
 def get_upload_data_usage():
-    global qb_online_status, current_session_previous_day_upload_data_usage
+    response = request_with_login(requests.get, f"{QB_URL}/api/v2/sync/maindata")
 
-    try:
-        response = request_with_login(requests.get, f"{QB_URL}/api/v2/transfer/info")
-
-        qb_online_status = True
-
-        if response.ok:
-            return (response.json().get("up_info_data", 0)) / (1024**3)  # Convert bits to GB
-        else:
-            raise Exception("Response wan't ok")
-    except:
-        qb_online_status = False
-        current_session_previous_day_upload_data_usage = 0.0
-        print("Failed to get upload data usage!")
-        return 0.0
+    if response.ok:
+        resp_json = response.json()
+        upload_data_gbs = resp_json.get("server_state").get("alltime_ul") / (1024**3)
+        return upload_data_gbs
+    else:
+        raise Exception("Response wan't ok")
+   
 
 
 def pause_all_seeding_torrents():
@@ -127,8 +121,9 @@ def pause_all_seeding_torrents():
             for torrent in seeding_torrents:
                 request_with_login(requests.post, f"{QB_URL}/api/v2/torrents/pause", data={"hashes": torrent["hash"]})
             print("Daily upload data usage limit reached, all seeding torrents paused")
+        return True
     except:
-        pass  # qBittorrent is offline
+        return False # qBittorrent is offline
 
 
 def resume_all_paused_torrents():
@@ -138,8 +133,9 @@ def resume_all_paused_torrents():
             for torrent in paused_torrents:
                 request_with_login(requests.post, f"{QB_URL}/api/v2/torrents/resume", data={"hashes": torrent["hash"]})
             print("Daily upload data usage reseted, all torrents resumed")
+        return True
     except:
-        pass  # qBittorrent is offline
+        return False  # qBittorrent is offline
 
 
 def load_data_from_cache():
@@ -148,77 +144,119 @@ def load_data_from_cache():
             return json.load(file)
     except:
         print("can't load data from cache")
-        return {"date": str(datetime.date.today()), "uploaded": 0.0}
+        data = []
+        with open("qb_upload_data_usage_cache.json", "w") as file:
+            file.write(str(data))
+        return data
 
 
 def save_data_to_cache(data):
     with open("qb_upload_data_usage_cache.json", "w") as file:
         json.dump(data, file)
 
+def update_usage_for_today():
+    global upload_today_midnight
+
+    today = str(datetime.date.today())
+    data = load_data_from_cache()
+    initial_usage_today = get_upload_data_usage()
+
+    # a safety check to ensure we don't add current date twice
+    todays_date_present = False
+    for values in data:
+        if values["date"] == today:
+            todays_date_present = True
+            if values["uploaded"] > initial_usage_today:
+                values["uploaded"] = initial_usage_today
+            break
+    
+    if not todays_date_present:
+        data.append({"date": str(datetime.date.today()), "uploaded": initial_usage_today})
+    
+    upload_today_midnight = initial_usage_today
+    save_data_to_cache(data)
 
 def check_previous_session_upload_data_usage():
-    global previous_session_upload_data_usage
+    global upload_today_midnight
 
     data = load_data_from_cache()
-    if data["date"] == str(datetime.date.today()):
-        previous_session_upload_data_usage = data["uploaded"]
 
+    # if the current date is not saved, we save the current 
+    # upload as a baseline
+    if len(data) == 0 or data[-1]["date"] != str(datetime.date.today()):
+        update_usage_for_today()
+        data = load_data_from_cache()
+    else:
+        upload_today_midnight = data[-1]["uploaded"]
+
+def get_normal_update_job():
+    return schedule.every(CHECK_INTERVAL).seconds.do(check_and_update_upload_data_usage)
+
+def get_normal_reset_job():
+    return schedule.every().day.at(RESET_TIME).do(reset_daily_usage)
 
 def check_and_update_upload_data_usage():
-    global previous_session_upload_data_usage, current_session_upload_data_usage, qb_online_status, last_event_upload_data_usage
+    global upload_today_midnight, update_job
+    try:
+        total_upload_data = get_upload_data_usage()
+    except requests.Timeout:
+        print("Request time-out: qBittorrent appears to be offline")
+        return
+    except requests.exceptions.ConnectionError as e:
+        print("Request failed, qBittorrent appears to be offline:\n", e)
+        return
+    
+    upload_data_today = total_upload_data - upload_today_midnight
 
-    data = load_data_from_cache()
-    today = str(datetime.date.today())
+    if upload_data_today >= UPLOAD_LIMIT:
+        if not pause_all_seeding_torrents():
+            print("qBittorrent seems to be offline, can't stop torrents.")
+            return
 
-    current_session_upload_data_usage = get_upload_data_usage()
+    now = datetime.datetime.now()
+    dt_string = now.strftime("%d/%m/%Y %H:%M:%S")
 
-    # if qbittorrent session continues past midnight then subtract the previous day usage
-    if current_session_previous_day_upload_data_usage != 0.0:
-        current_session_upload_data_usage = current_session_upload_data_usage - current_session_previous_day_upload_data_usage
-
-    total_upload_data_usage = 0.0
-
-    if qb_online_status == False:
-        # If qBittorrent went offline then consider the last upload data usage recorded when it was online
-        total_upload_data_usage = previous_session_upload_data_usage = previous_session_upload_data_usage + last_event_upload_data_usage
-    else:
-        total_upload_data_usage = previous_session_upload_data_usage + current_session_upload_data_usage
-
-    last_event_upload_data_usage = current_session_upload_data_usage
-
-    if total_upload_data_usage >= UPLOAD_LIMIT:
-        pause_all_seeding_torrents()
-
-    print("Today's upload data usage:")
-    print(f"Previous sessions: {previous_session_upload_data_usage}")
-    print(f"Current session: {current_session_upload_data_usage}")
-    print(f"Total: {total_upload_data_usage}")
+    print(dt_string)
+    print(f"Total upload: {total_upload_data:.2f}")
+    print(f"Today's upload data usage: {upload_data_today:.2f}")
     print("---------------------------")
 
-    data["date"] = today
-    data["uploaded"] = total_upload_data_usage
-    save_data_to_cache(data)
 
 
 def reset_daily_usage():
-    global previous_session_upload_data_usage, current_session_upload_data_usage, last_event_upload_data_usage, current_session_previous_day_upload_data_usage
+    global update_job, reset_job, qb_online_status
 
-    data = {"date": str(datetime.date.today()), "uploaded": 0.0}
-    save_data_to_cache(data)
+    # try except is necessary if qBittorrent is offline when reset_daily_usage
+    # is called. In such case we retry the reset_daily_usage until the requests
+    # are successful
+    try:
+        # make sure that the update is canceled to avoid collisions
+        schedule.cancel_job(update_job)
 
-    current_session_previous_day_upload_data_usage += current_session_upload_data_usage
+        update_usage_for_today()
 
-    previous_session_upload_data_usage = 0.0
-    current_session_upload_data_usage = 0.0
-    last_event_upload_data_usage = 0.0
-
-    resume_all_paused_torrents()
+        if resume_all_paused_torrents():
+            if not qb_online_status:
+                # if the serfver was offline, we need to cancel the rerty job
+                schedule.cancel_job(reset_job)
+                reset_job = get_normal_reset_job()
+                qb_online_status = True
+            update_job = get_normal_update_job()
+            update_job.run()
+        else:
+            raise Exception()
+    except Exception:
+        print("qBittorrent seems to be offline, can't restart torrents.")
+        if qb_online_status:
+            qb_online_status = False
+            reset_job = schedule.every(CHECK_INTERVAL).seconds.do(reset_daily_usage).run()
 
 
 if __name__ == "__main__":
     check_previous_session_upload_data_usage()
-    schedule.every(CHECK_INTERVAL).seconds.do(check_and_update_upload_data_usage).run()
-    schedule.every().day.at(RESET_TIME).do(reset_daily_usage)
+    update_job = get_normal_update_job()
+    reset_job = get_normal_reset_job()
+    update_job.run()
     # schedule.every(5).minutes.do(reset_daily_usage)  # reset schedule for development
 
     while True:
