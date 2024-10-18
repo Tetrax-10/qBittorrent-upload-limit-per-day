@@ -6,6 +6,7 @@ A Python script that automatically runs in the background on startup to track qB
 
 1. Download the [qb_upload_limit_per_day.py](https://github.com/Tetrax-10/qBittorrent-upload-limit-per-day/blob/main/qb_upload_limit_per_day.py) script.
 2. Place it inside **`C:\qBittorrent-upload-limit-per-day`** folder.
+3. Download the [requirements.txt](https://github.com/Tetrax-10/qBittorrent-upload-limit-per-day/blob/main/requirements.txt), place it in the same folder, and run **`pip install -r requirements.txt`** to install the necessary libraries. 
 3. Download the [qBittorrent-upload-limit-per-day startup.xml](https://github.com/Tetrax-10/qBittorrent-upload-limit-per-day/blob/main/qBittorrent-upload-limit-per-day%20startup.xml) file.
 4. Now open the xml file and replace `C:\path\to\your\python.exe` with your python.exe path. Tip: Run **`where python`** in cmd to get python.exe path.
 5. Import this xml as a task in **task scheduler**.
@@ -19,7 +20,19 @@ To check if the script has been installed and working properly, go to `C:\qBitto
 
 This script does work on Linux and Mac. But the Task scheduler (Xml) is limited to Windows only.
 
+## Authentification
+
+In order to allow the script to connect to servers that require authentification, you need to:
+1. Change `AUTH_ENABLED` in `qb_upload_limit_per_day.py` to `True`.
+2. Create `secrets.json` in the same folder as the script.
+3. Add your username / password to `secrets.json` in the following format:
+```json
+{
+    "username" : "<your username>",
+    "password" : "<your password>"
+}
+```
+
 ## To do
 
-1. Implement authentication with username and password. And remove `Bypass authentication for clients on localhost`.
-2. Add instructions for linux and mac scheduler.
+1. Add instructions for linux and mac scheduler.
