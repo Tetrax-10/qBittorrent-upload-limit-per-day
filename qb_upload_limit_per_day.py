@@ -4,13 +4,14 @@ import time
 import datetime
 import schedule
 
+from os.path import exists
 
 # Configuration
 UPLOAD_LIMIT = 50  # Upload limit in GB (per day)
 QB_URL = "http://localhost:8080"  # qBittorrent Web UI URL
 CHECK_INTERVAL = 10  # In seconds
 RESET_TIME = "00:01"  # HH:MM ("00:01" will reset exactly at 12:01.AM)
-
+AUTH_ENABLED = False  # True | False
 
 # Global vars
 previous_session_upload_data_usage = 0.0
@@ -19,12 +20,92 @@ last_event_upload_data_usage = 0.0
 current_session_previous_day_upload_data_usage = 0.0
 qb_online_status = False
 
+def login():
+    """
+    Performs login to qBittorrent WebUI using data from secrets.json
+    If login is successful, the resulting cookies are stored in 
+    cookies.json file, so that the other methods can access them 
+    for authentification
+    """
+    file_name = "secrets.json"
+    if not exists(file_name):
+        return False, f"{file_name} with your username and password doesn't exist."
+    try:
+        with open(file_name) as f:
+            secrets = json.load(f)
+            if "username" not in secrets:
+                return False, f"username field is not in {file_name}"
+            if "password" not in secrets:
+                return False, f"password field is not in {file_name}"
+    except Exception as e:
+        return False, f"Error {e} occured while reading JSON"
+
+    response = requests.post(f"{QB_URL}/api/v2/auth/login",data={"username":secrets["username"],"password":secrets["password"]})
+    if response.status_code != 200:
+        return False, response.text
+    if not response.text.lower().startswith("ok"):
+        return False, "Wrong username or password"
+    
+    with open("cookies.json","w") as f:
+        json.dump(response.cookies.get_dict(), f)
+    
+    return True, ""
+
+def print_login_failure(login_res):
+    """
+    Prints the reason the login failed and a template for secrets.json
+
+    :param login_res: -- tuple of two elements, where first - if login
+    was successful, second - failure message  
+    """
+    print("Login failed: ", login_res[1])
+    print('Make sure secrets.json has the following format\n'
+        '{\n'
+        '    "username" : "<your username>",\n'
+        '    "password" : "<your password>"\n'
+        '}')
+    
+def request_with_login(func, *args, **kwargs):
+    """
+    Performs a request with the added information for authentification.
+    If the request fails with 403, the function does a second login attempt
+    to generate new cookies. If after that the authentification still fails,
+    the program exits, as the user need to fix the credentials.
+
+    AUTH_ENABLED is False, the reqular request is performed instead.
+    :param func: -- function to perform the request, such as requests.get
+    :param args: -- fuction parameters
+    :param kwargs: -- function keyword parameters
+    """
+    if not AUTH_ENABLED:
+        return func(*args, **kwargs)
+    if not exists("cookies.json"):
+        res = login()
+        if not res[0]:
+            print_login_failure(res)
+            exit(1)
+    with open("cookies.json") as f:
+        cookies = json.load(f)
+
+    response = func(*args, **kwargs, cookies=cookies)
+    
+    if response.status_code == 403:
+        print("Token expired, requesting new one")
+        res = login()
+        if not res[0]:
+            print_login_failure(res)
+            exit(1)
+        with open("cookies.json") as f:
+            cookies = json.load(f)
+        response = func(*args, **kwargs, cookies=cookies)
+    
+    return response
 
 def get_upload_data_usage():
     global qb_online_status, current_session_previous_day_upload_data_usage
 
     try:
-        response = requests.get(f"{QB_URL}/api/v2/transfer/info")
+        response = request_with_login(requests.get, f"{QB_URL}/api/v2/transfer/info")
 
         qb_online_status = True
 
@@ -41,10 +122,10 @@ def get_upload_data_usage():
 
 def pause_all_seeding_torrents():
     try:
-        seeding_torrents = requests.get(f"{QB_URL}/api/v2/torrents/info?filter=seeding").json()
+        seeding_torrents = request_with_login(requests.get, f"{QB_URL}/api/v2/torrents/info?filter=seeding").json()
         if len(seeding_torrents):
             for torrent in seeding_torrents:
-                requests.post(f"{QB_URL}/api/v2/torrents/pause", data={"hashes": torrent["hash"]})
+                request_with_login(requests.post, f"{QB_URL}/api/v2/torrents/pause", data={"hashes": torrent["hash"]})
             print("Daily upload data usage limit reached, all seeding torrents paused")
     except:
         pass  # qBittorrent is offline
@@ -52,10 +133,10 @@ def pause_all_seeding_torrents():
 
 def resume_all_paused_torrents():
     try:
-        paused_torrents = requests.get(f"{QB_URL}/api/v2/torrents/info?filter=paused").json()
+        paused_torrents = request_with_login(requests.get, f"{QB_URL}/api/v2/torrents/info?filter=paused").json()
         if len(paused_torrents):
             for torrent in paused_torrents:
-                requests.post(f"{QB_URL}/api/v2/torrents/resume", data={"hashes": torrent["hash"]})
+                request_with_login(requests.post, f"{QB_URL}/api/v2/torrents/resume", data={"hashes": torrent["hash"]})
             print("Daily upload data usage reseted, all torrents resumed")
     except:
         pass  # qBittorrent is offline
@@ -136,7 +217,6 @@ def reset_daily_usage():
 
 if __name__ == "__main__":
     check_previous_session_upload_data_usage()
-
     schedule.every(CHECK_INTERVAL).seconds.do(check_and_update_upload_data_usage).run()
     schedule.every().day.at(RESET_TIME).do(reset_daily_usage)
     # schedule.every(5).minutes.do(reset_daily_usage)  # reset schedule for development
