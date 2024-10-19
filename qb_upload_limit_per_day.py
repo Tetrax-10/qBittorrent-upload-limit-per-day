@@ -3,14 +3,15 @@ import json
 import time
 import datetime
 import schedule
+
 from os.path import exists
 
 # Configuration
 UPLOAD_LIMIT = 50  # Upload limit in GB (per day)
-QB_URL = "http://localhost:8080"
+QB_URL = "http://localhost:8080"  # qBittorrent Web UI URL
 CHECK_INTERVAL = 10  # In seconds
 RESET_TIME = "00:01"  # HH:MM ("00:01" will reset exactly at 12:01.AM)
-AUTH_ENABLED = False
+AUTH_ENABLED = False  # True | False
 
 # Global vars
 previous_session_upload_data_usage = 0.0
@@ -23,7 +24,7 @@ def login():
     """
     Performs login to qBittorrent WebUI using data from secrets.json
     If login is successful, the resulting cookies are stored in 
-    cookies.txt file, so that the other methods can access them 
+    cookies.json file, so that the other methods can access them 
     for authentification
     """
     file_name = "secrets.json"
@@ -35,30 +36,30 @@ def login():
             if "username" not in secrets:
                 return False, f"username field is not in {file_name}"
             if "password" not in secrets:
-                return False, "password field is not in {file_name}"
+                return False, f"password field is not in {file_name}"
     except Exception as e:
         return False, f"Error {e} occured while reading JSON"
 
-    response = requests.get(f"{QB_URL}/api/v2/auth/login",params={"username":secrets["username"],"password":secrets["password"]})
+    response = requests.post(f"{QB_URL}/api/v2/auth/login",data={"username":secrets["username"],"password":secrets["password"]})
     if response.status_code != 200:
         return False, response.text
     if not response.text.lower().startswith("ok"):
         return False, "Wrong username or password"
     
-    with open("cookies.txt","w") as f:
+    with open("cookies.json","w") as f:
         json.dump(response.cookies.get_dict(), f)
     
     return True, ""
 
 def print_login_failure(login_res):
     """
-    Prints the reason the login failed and a template for secrets.txt
+    Prints the reason the login failed and a template for secrets.json
 
     :param login_res: -- tuple of two elements, where first - if login
     was successful, second - failure message  
     """
     print("Login failed: ", login_res[1])
-    print('Make sure secrets.txt has the following format\n'
+    print('Make sure secrets.json has the following format\n'
         '{\n'
         '    "username" : "<your username>",\n'
         '    "password" : "<your password>"\n'
@@ -78,12 +79,12 @@ def request_with_login(func, *args, **kwargs):
     """
     if not AUTH_ENABLED:
         return func(*args, **kwargs)
-    if not exists("cookies.txt"):
+    if not exists("cookies.json"):
         res = login()
         if not res[0]:
             print_login_failure(res)
             exit(1)
-    with open("cookies.txt") as f:
+    with open("cookies.json") as f:
         cookies = json.load(f)
 
     response = func(*args, **kwargs, cookies=cookies)
@@ -94,7 +95,7 @@ def request_with_login(func, *args, **kwargs):
         if not res[0]:
             print_login_failure(res)
             exit(1)
-        with open("cookies.txt") as f:
+        with open("cookies.json") as f:
             cookies = json.load(f)
         response = func(*args, **kwargs, cookies=cookies)
     

@@ -25,7 +25,7 @@ This script does work on Linux and Mac. But the Task scheduler (Xml) is limited 
 In order to allow the script to connect to servers that require authentification, you need to:
 1. Change `AUTH_ENABLED` in `qb_upload_limit_per_day.py` to `True`.
 2. Create `secrets.json` in the same folder as the script.
-3. Add your username / password to `secrets.json` in the following format:
+3. Add your username and password to `secrets.json` in the following format:
 ```json
 {
     "username" : "<your username>",
