@@ -8,10 +8,10 @@ from os.path import exists
 
 # Configuration
 UPLOAD_LIMIT = 50  # Upload limit in GB (per day)
-QB_URL = "http://localhost:8080" # qBittorrent Web UI URL
+QB_URL = "http://localhost:8080"  # qBittorrent Web UI URL
 CHECK_INTERVAL = 10  # In seconds
 RESET_TIME = "00:01"  # HH:MM ("00:01" will reset exactly at 12:01.AM)
-AUTH_ENABLED = True
+AUTH_ENABLED = False
 TIMEOUT = 10
 
 # Global vars
@@ -123,7 +123,7 @@ def pause_all_seeding_torrents():
             print("Daily upload data usage limit reached, all seeding torrents paused")
         return True
     except:
-        return False # qBittorrent is offline
+        return False  # qBittorrent is offline
 
 
 def resume_all_paused_torrents():
@@ -143,7 +143,7 @@ def load_data_from_cache():
         with open("qb_upload_data_usage_cache.json", "r") as file:
             return json.load(file)
     except:
-        print("can't load data from cache")
+        print("can't load data from cache, so creating one...")
         data = []
         save_data_to_cache(data)
         return data
